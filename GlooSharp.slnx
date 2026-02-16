@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/GlooSharp/GlooSharp.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/GlooSharp.Tests/GlooSharp.Tests.csproj" />
+  </Folder>
+</Solution>

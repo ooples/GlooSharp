@@ -1,0 +1,132 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_NOLOGO: true
+  COVERAGE_THRESHOLD: 3
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+        dotnet-quality: 'ga'
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Build
+      run: dotnet build --configuration Release --no-restore
+
+    - name: Test with Coverage
+      run: |
+        dotnet test --configuration Release --no-build --verbosity normal --framework net10.0 \
+          --collect:"XPlat Code Coverage" \
+          --results-directory ./coverage \
+          -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura
+
+    - name: Install ReportGenerator
+      run: dotnet tool install --global dotnet-reportgenerator-globaltool
+
+    - name: Generate Coverage Report
+      run: |
+        reportgenerator \
+          -reports:"./coverage/**/coverage.cobertura.xml" \
+          -targetdir:"./coverage/report" \
+          -reporttypes:"Html;Cobertura;TextSummary"
+
+    - name: Display Coverage Summary
+      run: |
+        SUMMARY_FILE="./coverage/report/Summary.txt"
+        if [ -f "$SUMMARY_FILE" ]; then
+          echo "=== Code Coverage Summary ==="
+          cat "$SUMMARY_FILE"
+          echo "============================="
+        fi
+
+    - name: Check Coverage Threshold
+      run: |
+        COVERAGE_FILE=$(find ./coverage -name "coverage.cobertura.xml" -type f | head -1)
+        if [ -z "$COVERAGE_FILE" ]; then
+          echo "Error: No coverage file found!"
+          exit 1
+        fi
+
+        LINE_RATE=$(grep -oP 'line-rate="\K[^"]+' "$COVERAGE_FILE" | head -1)
+        BRANCH_RATE=$(grep -oP 'branch-rate="\K[^"]+' "$COVERAGE_FILE" | head -1)
+
+        LINE_PCT=$(echo "$LINE_RATE * 100" | bc -l)
+        BRANCH_PCT=$(echo "$BRANCH_RATE * 100" | bc -l)
+
+        printf "Line Coverage: %.2f%%\n" "$LINE_PCT"
+        printf "Branch Coverage: %.2f%%\n" "$BRANCH_PCT"
+        echo "Required Threshold: ${COVERAGE_THRESHOLD}%"
+
+        BELOW=$(echo "$LINE_PCT < $COVERAGE_THRESHOLD" | bc -l)
+        if [ "$BELOW" -eq 1 ]; then
+          printf "Error: Line coverage (%.2f%%) is below the required threshold (%s%%)!\n" "$LINE_PCT" "$COVERAGE_THRESHOLD"
+          exit 1
+        fi
+
+        echo "Coverage check PASSED!"
+
+    - name: Upload Coverage Report
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: coverage-report
+        path: ./coverage/report/
+
+    - name: Upload Coverage to Codecov
+      uses: codecov/codecov-action@v4
+      if: always()
+      with:
+        files: ./coverage/**/coverage.cobertura.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+        verbose: true
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+        dotnet-quality: 'ga'
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Build
+      run: dotnet build --configuration Release --no-restore
+
+    - name: Pack
+      run: dotnet pack src/GlooSharp/GlooSharp.csproj --configuration Release --no-build --output ./artifacts
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: nuget-packages
+        path: ./artifacts/*.nupkg

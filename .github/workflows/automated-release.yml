@@ -1,0 +1,406 @@
+name: Automated Release Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.editorconfig'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_NOLOGO: true
+
+jobs:
+  version-and-build:
+    name: Version and Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      package_version: ${{ steps.version.outputs.version }}
+      changelog: ${{ steps.version.outputs.changelog }}
+      should_release: ${{ steps.version.outputs.should_release }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'ga'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Build.props') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Determine version from conventional commits
+        id: version
+        shell: bash
+        run: |
+          set -e
+
+          echo "=== Automated Semantic Versioning from Conventional Commits ==="
+
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Latest tag: $LATEST_TAG"
+
+          CURRENT_VERSION=${LATEST_TAG#v}
+          echo "Current version: $CURRENT_VERSION"
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+          PATCH=${PATCH%%-*}
+
+          echo "Parsed version: $MAJOR.$MINOR.$PATCH"
+
+          if git rev-parse "$LATEST_TAG" >/dev/null 2>&1; then
+            COMMITS=$(git log "$LATEST_TAG..HEAD" --oneline --no-merges)
+          else
+            COMMITS=$(git log --oneline --no-merges)
+          fi
+
+          echo "=== Commits since last tag ==="
+          echo "$COMMITS"
+          echo "==========================="
+
+          BUMP_TYPE="none"
+
+          if echo "$COMMITS" | grep -iE "(BREAKING CHANGE:|BREAKING:|^[a-f0-9]+ [a-z]+(\([^)]*\))?!:)" > /dev/null; then
+            BUMP_TYPE="major"
+            echo "Found BREAKING CHANGE - will bump MAJOR version"
+          fi
+
+          if [ "$BUMP_TYPE" = "none" ] && echo "$COMMITS" | grep -iE "^[a-f0-9]+ feat(\(.*\))?:" > /dev/null; then
+            BUMP_TYPE="minor"
+            echo "Found feat: commits - will bump MINOR version"
+          fi
+
+          if [ "$BUMP_TYPE" = "none" ] && echo "$COMMITS" | grep -iE "^[a-f0-9]+ (fix|refactor|perf|docs)(\(.*\))?:" > /dev/null; then
+            BUMP_TYPE="minor"
+            echo "Found fix:/refactor:/perf:/docs: commits - will bump MINOR version"
+          fi
+
+          if [ "$BUMP_TYPE" = "none" ] && echo "$COMMITS" | grep -iE "^[a-f0-9]+ (add|implement|create|new) " > /dev/null; then
+            BUMP_TYPE="minor"
+            echo "Found Add/Implement/Create commits - will bump MINOR version"
+          fi
+
+          if [ "$BUMP_TYPE" = "none" ] && echo "$COMMITS" | grep -iE "^[a-f0-9]+ (fix|update|improve|enhance|resolve|patch|correct|repair) " > /dev/null; then
+            BUMP_TYPE="minor"
+            echo "Found Fix/Update/Improve commits - will bump MINOR version"
+          fi
+
+          case $BUMP_TYPE in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              echo "Bumping MAJOR: $CURRENT_VERSION -> $MAJOR.$MINOR.$PATCH"
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              echo "Bumping MINOR: $CURRENT_VERSION -> $MAJOR.$MINOR.$PATCH"
+              ;;
+            none)
+              echo "No conventional commits found, no version bump"
+              echo "should_release=false" >> $GITHUB_OUTPUT
+              echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+              echo "changelog=No release needed - no conventional commits found" >> $GITHUB_OUTPUT
+              exit 0
+              ;;
+          esac
+
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          echo "New version: $NEW_VERSION"
+
+          echo "=== Generating Changelog ==="
+          CHANGELOG="## Changes in v$NEW_VERSION"$'\n\n'
+
+          FEATURES=$(echo "$COMMITS" | grep -iE "^[a-f0-9]+ feat(\(.*\))?:" || true)
+          if [ -n "$FEATURES" ]; then
+            CHANGELOG+="### Features"$'\n'
+            while IFS= read -r line; do
+              MSG=$(echo "$line" | sed -E 's/^[a-f0-9]+ feat(\(.*\))?: //')
+              CHANGELOG+="- $MSG"$'\n'
+            done < <(echo "$FEATURES")
+            CHANGELOG+=$'\n'
+          fi
+
+          FIXES=$(echo "$COMMITS" | grep -iE "^[a-f0-9]+ fix(\(.*\))?:" || true)
+          if [ -n "$FIXES" ]; then
+            CHANGELOG+="### Bug Fixes"$'\n'
+            while IFS= read -r line; do
+              MSG=$(echo "$line" | sed -E 's/^[a-f0-9]+ fix(\(.*\))?: //')
+              CHANGELOG+="- $MSG"$'\n'
+            done < <(echo "$FIXES")
+            CHANGELOG+=$'\n'
+          fi
+
+          echo "$CHANGELOG"
+
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "should_release=true" >> $GITHUB_OUTPUT
+
+          echo "$CHANGELOG" > /tmp/changelog.txt
+          {
+            echo 'changelog<<EOF'
+            cat /tmp/changelog.txt
+            echo EOF
+          } >> $GITHUB_OUTPUT
+
+      - name: Restore dependencies
+        if: steps.version.outputs.should_release == 'true'
+        run: dotnet restore
+
+      - name: Build
+        if: steps.version.outputs.should_release == 'true'
+        run: dotnet build -c Release --no-restore
+
+  build-native:
+    name: Build Native ${{ matrix.os-name }}
+    needs: version-and-build
+    if: needs.version-and-build.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            os-name: linux-x64
+            runtime: linux-x64
+            lib-name: libgloo_native.so
+          - os: macos-14
+            os-name: osx-arm64
+            runtime: osx-arm64
+            lib-name: libgloo_native.dylib
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libuv1-dev libssl-dev
+
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake libuv openssl
+
+      - name: Clone and build Gloo
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/facebookincubator/gloo.git /tmp/gloo
+          mkdir -p /tmp/gloo/build && cd /tmp/gloo/build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_INSTALL_PREFIX=/tmp/gloo-install -DBUILD_TEST=OFF -DBUILD_BENCHMARK=OFF -DUSE_IBVERBS=OFF
+          cmake --build . --config Release -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+          cmake --install .
+
+      - name: Build gloo_native shim
+        shell: bash
+        run: |
+          mkdir -p src/GlooSharp/native/build && cd src/GlooSharp/native/build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/tmp/gloo-install -DGLOO_USE_IBVERBS=OFF
+          cmake --build . --config Release -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+
+      - name: Upload native binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.runtime }}
+          path: src/GlooSharp/native/build/${{ matrix.lib-name }}
+          if-no-files-found: warn
+
+  pack:
+    name: Pack NuGet
+    runs-on: ubuntu-latest
+    needs: [version-and-build, build-native]
+    timeout-minutes: 20
+    if: needs.version-and-build.outputs.should_release == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download native binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: native-artifacts/
+
+      - name: Place native binaries in runtimes
+        run: |
+          mkdir -p src/GlooSharp/runtimes/linux-x64/native
+          mkdir -p src/GlooSharp/runtimes/osx-arm64/native
+
+          LINUX_DST=src/GlooSharp/runtimes/linux-x64/native/libgloo_native.so
+          OSX_DST=src/GlooSharp/runtimes/osx-arm64/native/libgloo_native.dylib
+
+          cp native-artifacts/native-linux-x64/libgloo_native.so "$LINUX_DST" 2>/dev/null || echo "Warning: No Linux binary"
+          cp native-artifacts/native-osx-arm64/libgloo_native.dylib "$OSX_DST" 2>/dev/null || echo "Warning: No macOS binary"
+
+          echo "=== Native binaries ==="
+          missing=0
+          if [ ! -f "$LINUX_DST" ]; then
+            echo "Error: Missing Linux native binary"
+            missing=1
+          fi
+          if [ ! -f "$OSX_DST" ]; then
+            echo "Error: Missing macOS native binary"
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          find src/GlooSharp/runtimes -type f
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'ga'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Build.props') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Restore and Build
+        run: |
+          dotnet restore
+          dotnet build -c Release --no-restore
+
+      - name: Pack NuGet packages
+        run: |
+          VERSION="${{ needs.version-and-build.outputs.package_version }}"
+          echo "Packing version $VERSION"
+
+          mkdir -p out
+
+          if [ -f "src/GlooSharp/GlooSharp.csproj" ]; then
+            echo "Packing GlooSharp..."
+            dotnet pack src/GlooSharp/GlooSharp.csproj -c Release -o out --no-build /p:PackageVersion="$VERSION"
+          fi
+
+          echo "=== Packages created ==="
+          ls -la out/
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages-${{ github.sha }}
+          path: out/*.nupkg
+          if-no-files-found: error
+
+  publish-nuget:
+    name: Publish to NuGet
+    runs-on: ubuntu-latest
+    needs: [version-and-build, pack]
+    timeout-minutes: 10
+    if: needs.version-and-build.outputs.should_release == 'true'
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          name: nuget-packages-${{ github.sha }}
+          path: out/
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Push to NuGet
+        shell: bash
+        run: |
+          shopt -s nullglob
+          pkgs=(out/*.nupkg)
+
+          if [ ${#pkgs[@]} -eq 0 ]; then
+            echo "Error: No .nupkg files found in out/ directory"
+            exit 1
+          fi
+
+          for pkg in "${pkgs[@]}"; do
+            echo "Publishing $pkg to NuGet..."
+            if ! dotnet nuget push "$pkg" \
+              --api-key ${{ secrets.NUGET_API_KEY }} \
+              --source https://api.nuget.org/v3/index.json \
+              --skip-duplicate; then
+              echo "Error: Failed to publish $pkg"
+              exit 1
+            fi
+            echo "Successfully published $pkg"
+          done
+
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [version-and-build, publish-nuget]
+    timeout-minutes: 10
+    if: needs.version-and-build.outputs.should_release == 'true'
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          name: nuget-packages-${{ github.sha }}
+          path: out/
+
+      - name: List artifacts
+        run: ls -lah out/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.version-and-build.outputs.package_version }}
+          name: Release v${{ needs.version-and-build.outputs.package_version }}
+          body: |
+            ${{ needs.version-and-build.outputs.changelog }}
+
+            ## Package
+
+            - **GlooSharp** - .NET bindings for the Gloo collective communications library
+
+            ## Installation
+
+            ```bash
+            dotnet add package GlooSharp
+            ```
+
+            ## Native Library
+
+            Pre-built native binaries for **linux-x64** and **osx-arm64** are included in the NuGet package.
+            For Windows or other platforms, build the native library from source. See [Building Native Library](https://github.com/ooples/GlooSharp#building-the-native-library).
+          files: out/*.nupkg
+          draft: false
+          prerelease: false
+          make_latest: true
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,136 @@
+name: Build Native Libraries
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master, main ]
+    paths:
+      - 'src/GlooSharp/native/**'
+      - '.github/workflows/build-native.yml'
+
+env:
+  GLOO_VERSION: 'main'
+
+jobs:
+  build-native:
+    name: Build ${{ matrix.os-name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            os-name: linux-x64
+            runtime: linux-x64
+            lib-name: libgloo_native.so
+          - os: macos-14
+            os-name: osx-arm64
+            runtime: osx-arm64
+            lib-name: libgloo_native.dylib
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout GlooSharp
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libuv1-dev libssl-dev
+
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake libuv openssl
+
+      - name: Clone and build Gloo
+        shell: bash
+        run: |
+          echo "=== Cloning Gloo ==="
+          git clone --depth 1 --branch ${{ env.GLOO_VERSION }} \
+            https://github.com/facebookincubator/gloo.git /tmp/gloo
+
+          echo "=== Building Gloo ==="
+          mkdir -p /tmp/gloo/build
+          cd /tmp/gloo/build
+
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_INSTALL_PREFIX=/tmp/gloo-install \
+            -DBUILD_TEST=OFF \
+            -DBUILD_BENCHMARK=OFF \
+            -DUSE_IBVERBS=OFF
+
+          cmake --build . --config Release -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+          cmake --install .
+
+          echo "=== Gloo installed ==="
+          ls -la /tmp/gloo-install/lib/
+
+      - name: Build gloo_native shim
+        shell: bash
+        run: |
+          echo "=== Building gloo_native ==="
+          mkdir -p src/GlooSharp/native/build
+          cd src/GlooSharp/native/build
+
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/tmp/gloo-install \
+            -DGLOO_USE_IBVERBS=OFF
+
+          cmake --build . --config Release -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+
+          echo "=== Built files ==="
+          ls -la
+
+      - name: Prepare runtime artifact
+        shell: bash
+        run: |
+          mkdir -p runtimes/${{ matrix.runtime }}/native
+
+          # Find and copy the built library
+          find src/GlooSharp/native/build -name "${{ matrix.lib-name }}" -exec cp {} runtimes/${{ matrix.runtime }}/native/ \;
+
+          echo "=== Runtime artifact ==="
+          ls -la runtimes/${{ matrix.runtime }}/native/
+
+      - name: Upload native binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.runtime }}
+          path: runtimes/${{ matrix.runtime }}/native/${{ matrix.lib-name }}
+          if-no-files-found: error
+
+  collect-natives:
+    name: Collect Native Binaries
+    needs: build-native
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Assemble runtimes directory
+        run: |
+          mkdir -p runtimes/linux-x64/native
+          mkdir -p runtimes/osx-arm64/native
+
+          cp artifacts/native-linux-x64/* runtimes/linux-x64/native/ || true
+          cp artifacts/native-osx-arm64/* runtimes/osx-arm64/native/ || true
+
+          echo "=== Final runtimes layout ==="
+          find runtimes -type f
+
+      - name: Upload combined runtimes
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-runtimes-all
+          path: runtimes/
+          if-no-files-found: warn
