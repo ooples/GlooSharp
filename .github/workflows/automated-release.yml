@@ -180,15 +180,88 @@ jobs:
         if: steps.version.outputs.should_release == 'true'
         run: dotnet build -c Release --no-restore
 
+  build-native:
+    name: Build Native ${{ matrix.os-name }}
+    needs: version-and-build
+    if: needs.version-and-build.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            os-name: linux-x64
+            runtime: linux-x64
+            lib-name: libgloo_native.so
+          - os: macos-14
+            os-name: osx-arm64
+            runtime: osx-arm64
+            lib-name: libgloo_native.dylib
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libuv1-dev libssl-dev
+
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake libuv openssl
+
+      - name: Clone and build Gloo
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/facebookincubator/gloo.git /tmp/gloo
+          mkdir -p /tmp/gloo/build && cd /tmp/gloo/build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_INSTALL_PREFIX=/tmp/gloo-install -DBUILD_TEST=OFF -DBUILD_BENCHMARK=OFF -DUSE_IBVERBS=OFF
+          cmake --build . --config Release -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+          cmake --install .
+
+      - name: Build gloo_native shim
+        shell: bash
+        run: |
+          mkdir -p src/GlooSharp/native/build && cd src/GlooSharp/native/build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/tmp/gloo-install -DGLOO_USE_IBVERBS=OFF
+          cmake --build . --config Release -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+
+      - name: Upload native binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.runtime }}
+          path: src/GlooSharp/native/build/${{ matrix.lib-name }}
+          if-no-files-found: warn
+
   pack:
     name: Pack NuGet
     runs-on: windows-latest
-    needs: version-and-build
+    needs: [version-and-build, build-native]
     timeout-minutes: 20
     if: needs.version-and-build.outputs.should_release == 'true'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Download native binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: native-artifacts/
+
+      - name: Place native binaries in runtimes
+        shell: bash
+        run: |
+          mkdir -p src/GlooSharp/runtimes/linux-x64/native
+          mkdir -p src/GlooSharp/runtimes/osx-arm64/native
+
+          cp native-artifacts/native-linux-x64/libgloo_native.so src/GlooSharp/runtimes/linux-x64/native/ 2>/dev/null || echo "No Linux binary"
+          cp native-artifacts/native-osx-arm64/libgloo_native.dylib src/GlooSharp/runtimes/osx-arm64/native/ 2>/dev/null || echo "No macOS binary"
+
+          echo "=== Native binaries ==="
+          find src/GlooSharp/runtimes -type f 2>/dev/null || echo "No native binaries found"
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -312,8 +385,8 @@ jobs:
 
             ## Native Library
 
-            The native `gloo_native` library must be built separately from the C++ source in `src/GlooSharp/native/`.
-            See [Building Native Library](https://github.com/ooples/GlooSharp#building-the-native-library) for instructions.
+            Pre-built native binaries for **linux-x64** and **osx-arm64** are included in the NuGet package.
+            For Windows or other platforms, build the native library from source. See [Building Native Library](https://github.com/ooples/GlooSharp#building-the-native-library).
           files: out/*.nupkg
           draft: false
           prerelease: false
