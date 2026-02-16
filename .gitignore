@@ -1,0 +1,60 @@
+## .NET
+bin/
+obj/
+out/
+artifacts/
+*.nupkg
+*.snupkg
+
+## IDE
+.vs/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+.idea/
+
+## Build
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+bld/
+[Bb]uild/
+[Oo]ut/
+
+## NuGet
+packages/
+*.nuget.props
+*.nuget.targets
+project.lock.json
+
+## OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+## Coverage
+coverage/
+*.coverage
+*.coveragexml
+TestResults/
+
+## Native build artifacts
+src/GlooSharp/native/build/
+src/GlooSharp/native/CMakeFiles/
+src/GlooSharp/native/CMakeCache.txt
+src/GlooSharp/native/cmake_install.cmake
+src/GlooSharp/native/Makefile
+*.o
+*.obj
+*.dll
+*.so
+*.dylib
+*.lib
+*.a
+
+## Runtimes (pre-built native binaries added manually)
+# Uncomment if you want to track native binaries:
+# !src/GlooSharp/runtimes/
