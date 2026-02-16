@@ -83,9 +83,17 @@ public static class GlooTransport
     }
 
     /// <summary>
-    /// Gets the default store path for rendezvous. Uses the GLOO_STORE_PATH environment
+    /// Gets the default store path for rendezvous. Uses the <c>GLOO_STORE_PATH</c> environment
     /// variable if set, otherwise creates a temporary directory.
     /// </summary>
+    /// <remarks>
+    /// <b>Important:</b> All ranks in the same distributed job MUST use the same store path.
+    /// The default path (<c>{TempDir}/gloo_rendezvous</c>) is shared across all processes on
+    /// the machine, which is correct for single-machine multi-process training. For
+    /// multi-machine training, set <c>GLOO_STORE_PATH</c> to a shared filesystem path
+    /// (e.g., NFS mount) or pass an explicit <c>storePath</c> parameter. Different Gloo
+    /// jobs on the same machine should use different store paths to avoid interference.
+    /// </remarks>
     private static string GetDefaultStorePath()
     {
         string? envPath = Environment.GetEnvironmentVariable("GLOO_STORE_PATH");

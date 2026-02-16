@@ -78,7 +78,7 @@ cmake --build . --config Release
 
 Place the built library in the appropriate runtime directory for NuGet packaging:
 
-```
+```text
 src/GlooSharp/runtimes/
   win-x64/native/gloo_native.dll
   linux-x64/native/libgloo_native.so
@@ -87,7 +87,7 @@ src/GlooSharp/runtimes/
 
 ## Architecture
 
-```
+```text
 GlooSharp (Managed .NET)
     |
     | P/Invoke [DllImport("gloo_native")]

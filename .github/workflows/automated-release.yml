@@ -47,7 +47,7 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-          dotnet-quality: 'preview'
+          dotnet-quality: 'ga'
 
       - name: Cache NuGet packages
         uses: actions/cache@v4
@@ -257,17 +257,22 @@ jobs:
           mkdir -p src/GlooSharp/runtimes/linux-x64/native
           mkdir -p src/GlooSharp/runtimes/osx-arm64/native
 
-          cp native-artifacts/native-linux-x64/libgloo_native.so src/GlooSharp/runtimes/linux-x64/native/ 2>/dev/null || echo "No Linux binary"
-          cp native-artifacts/native-osx-arm64/libgloo_native.dylib src/GlooSharp/runtimes/osx-arm64/native/ 2>/dev/null || echo "No macOS binary"
+          cp native-artifacts/native-linux-x64/libgloo_native.so src/GlooSharp/runtimes/linux-x64/native/ 2>/dev/null || echo "Warning: No Linux binary"
+          cp native-artifacts/native-osx-arm64/libgloo_native.dylib src/GlooSharp/runtimes/osx-arm64/native/ 2>/dev/null || echo "Warning: No macOS binary"
 
           echo "=== Native binaries ==="
-          find src/GlooSharp/runtimes -type f 2>/dev/null || echo "No native binaries found"
+          NATIVE_COUNT=$(find src/GlooSharp/runtimes -type f 2>/dev/null | wc -l)
+          if [ "$NATIVE_COUNT" -eq 0 ]; then
+            echo "Error: No native binaries found - cannot pack without native libraries"
+            exit 1
+          fi
+          find src/GlooSharp/runtimes -type f
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-          dotnet-quality: 'preview'
+          dotnet-quality: 'ga'
 
       - name: Cache NuGet packages
         uses: actions/cache@v4
@@ -337,16 +342,14 @@ jobs:
 
           for pkg in "${pkgs[@]}"; do
             echo "Publishing $pkg to NuGet..."
-            dotnet nuget push "$pkg" \
+            if ! dotnet nuget push "$pkg" \
               --api-key ${{ secrets.NUGET_API_KEY }} \
               --source https://api.nuget.org/v3/index.json \
-              --skip-duplicate
-
-            if [ $? -eq 0 ]; then
-              echo "Successfully published $pkg"
-            else
-              echo "Warning: Failed to publish $pkg (may already exist)"
+              --skip-duplicate; then
+              echo "Error: Failed to publish $pkg"
+              exit 1
             fi
+            echo "Successfully published $pkg"
           done
 
   github-release:

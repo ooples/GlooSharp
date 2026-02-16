@@ -85,7 +85,8 @@ GLOO_NATIVE_EXPORT int gloo_context_destroy(void* ctx);
  *
  * @param ctx        The Gloo context.
  * @param hostname   Hostname or IP to bind to.
- * @param port       Base port number.
+ * @param port       Reserved for API compatibility. Gloo uses ephemeral ports
+ *                   with rendezvous-based address exchange.
  * @param store_path Path to a shared directory for rendezvous (FileStore).
  *                   All processes must be able to read/write this path.
  * @return           GLOO_SUCCESS or an error code.

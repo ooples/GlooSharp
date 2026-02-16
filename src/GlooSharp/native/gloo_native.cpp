@@ -73,6 +73,46 @@ static size_t element_size(int datatype) {
     }
 }
 
+/* ─── Helper: get typed reduce function for a given op ────────────── */
+
+using ReduceFunc = void(*)(void*, const void*, const void*, size_t);
+
+template <typename T>
+static ReduceFunc get_reduce_function(int op) {
+    switch (op) {
+        case GLOO_OP_SUM:
+            return [](void* c, const void* a, const void* b, size_t n) {
+                auto* tc = static_cast<T*>(c);
+                auto* ta = static_cast<const T*>(a);
+                auto* tb = static_cast<const T*>(b);
+                for (size_t i = 0; i < n / sizeof(T); ++i) tc[i] = ta[i] + tb[i];
+            };
+        case GLOO_OP_PRODUCT:
+            return [](void* c, const void* a, const void* b, size_t n) {
+                auto* tc = static_cast<T*>(c);
+                auto* ta = static_cast<const T*>(a);
+                auto* tb = static_cast<const T*>(b);
+                for (size_t i = 0; i < n / sizeof(T); ++i) tc[i] = ta[i] * tb[i];
+            };
+        case GLOO_OP_MIN:
+            return [](void* c, const void* a, const void* b, size_t n) {
+                auto* tc = static_cast<T*>(c);
+                auto* ta = static_cast<const T*>(a);
+                auto* tb = static_cast<const T*>(b);
+                for (size_t i = 0; i < n / sizeof(T); ++i) tc[i] = (ta[i] < tb[i]) ? ta[i] : tb[i];
+            };
+        case GLOO_OP_MAX:
+            return [](void* c, const void* a, const void* b, size_t n) {
+                auto* tc = static_cast<T*>(c);
+                auto* ta = static_cast<const T*>(a);
+                auto* tb = static_cast<const T*>(b);
+                for (size_t i = 0; i < n / sizeof(T); ++i) tc[i] = (ta[i] > tb[i]) ? ta[i] : tb[i];
+            };
+        default:
+            throw std::invalid_argument("Unknown reduction operation");
+    }
+}
+
 /* ─── Helper: typed dispatch for AllReduce ──────────────────────── */
 
 template <typename T>
@@ -81,50 +121,25 @@ static void do_allreduce(std::shared_ptr<gloo::Context>& ctx,
     gloo::AllreduceOptions opts(ctx);
     opts.setInput(static_cast<T*>(sendbuf), count);
     opts.setOutput(static_cast<T*>(recvbuf), count);
-
-    using Func = void(*)(void*, const void*, const void*, size_t);
-    switch (op) {
-        case GLOO_OP_SUM:
-            opts.setReduceFunction(static_cast<Func>(
-                [](void* c, const void* a, const void* b, size_t n) {
-                    auto* tc = static_cast<T*>(c);
-                    auto* ta = static_cast<const T*>(a);
-                    auto* tb = static_cast<const T*>(b);
-                    for (size_t i = 0; i < n / sizeof(T); ++i) tc[i] = ta[i] + tb[i];
-                }));
-            break;
-        case GLOO_OP_PRODUCT:
-            opts.setReduceFunction(static_cast<Func>(
-                [](void* c, const void* a, const void* b, size_t n) {
-                    auto* tc = static_cast<T*>(c);
-                    auto* ta = static_cast<const T*>(a);
-                    auto* tb = static_cast<const T*>(b);
-                    for (size_t i = 0; i < n / sizeof(T); ++i) tc[i] = ta[i] * tb[i];
-                }));
-            break;
-        case GLOO_OP_MIN:
-            opts.setReduceFunction(static_cast<Func>(
-                [](void* c, const void* a, const void* b, size_t n) {
-                    auto* tc = static_cast<T*>(c);
-                    auto* ta = static_cast<const T*>(a);
-                    auto* tb = static_cast<const T*>(b);
-                    for (size_t i = 0; i < n / sizeof(T); ++i) tc[i] = (ta[i] < tb[i]) ? ta[i] : tb[i];
-                }));
-            break;
-        case GLOO_OP_MAX:
-            opts.setReduceFunction(static_cast<Func>(
-                [](void* c, const void* a, const void* b, size_t n) {
-                    auto* tc = static_cast<T*>(c);
-                    auto* ta = static_cast<const T*>(a);
-                    auto* tb = static_cast<const T*>(b);
-                    for (size_t i = 0; i < n / sizeof(T); ++i) tc[i] = (ta[i] > tb[i]) ? ta[i] : tb[i];
-                }));
-            break;
-        default:
-            throw std::invalid_argument("Unknown reduction operation");
-    }
-
+    opts.setReduceFunction(static_cast<ReduceFunc>(get_reduce_function<T>(op)));
     gloo::allreduce(opts);
+}
+
+/* ─── Helper: typed dispatch for ReduceScatter ─────────────────── */
+
+template <typename T>
+static void do_reduce_scatter(std::shared_ptr<gloo::Context>& ctx,
+                               void* sendbuf, void* recvbuf,
+                               int count, int recvcount, int worldSize, int op) {
+    gloo::ReduceScatterOptions opts(ctx);
+    opts.setInput(static_cast<T*>(sendbuf), count);
+    opts.setOutput(static_cast<T*>(recvbuf), recvcount);
+    opts.setReduceFunction(static_cast<ReduceFunc>(get_reduce_function<T>(op)));
+
+    std::vector<int> counts(worldSize, recvcount);
+    opts.setRecvCounts(counts);
+
+    gloo::reduce_scatter(opts);
 }
 
 /* ─── Context lifecycle ─────────────────────────────────────────── */
@@ -163,6 +178,12 @@ int gloo_transport_tcp_create(void* ctx, const char* hostname,
 
     try {
         auto* wrapper = static_cast<GlooContextWrapper*>(ctx);
+
+        // Note: Gloo's tcp::attr does not have a port field. Gloo binds to an
+        // ephemeral port and uses the rendezvous store for address exchange.
+        // The port parameter is kept in the API for user-facing clarity but is
+        // not used by the transport layer.
+        (void)port;
 
         gloo::transport::tcp::attr attr;
         attr.hostname = hostname;
@@ -275,10 +296,11 @@ int gloo_allreduce(void* ctx, void* sendbuf, void* recvbuf,
 }
 
 int gloo_broadcast(void* ctx, void* buf, int count, int datatype, int root) {
-    if (!ctx || !buf || count <= 0) return GLOO_INVALID_ARGUMENT;
+    if (!ctx || !buf || count <= 0 || root < 0) return GLOO_INVALID_ARGUMENT;
 
     auto* wrapper = static_cast<GlooContextWrapper*>(ctx);
     if (!wrapper->context) return GLOO_NOT_INITIALIZED;
+    if (root >= wrapper->size) return GLOO_INVALID_ARGUMENT;
 
     try {
         size_t esize = element_size(datatype);
@@ -381,35 +403,29 @@ int gloo_reduce_scatter(void* ctx, void* sendbuf, void* recvbuf,
         int recvcount = count / wrapper->size;
         if (recvcount * wrapper->size != count) return GLOO_INVALID_ARGUMENT;
 
-        gloo::ReduceScatterOptions opts(wrapper->context);
-
         switch (datatype) {
             case GLOO_FLOAT32:
-                opts.setInput(static_cast<float*>(sendbuf), count);
-                opts.setOutput(static_cast<float*>(recvbuf), recvcount);
+                do_reduce_scatter<float>(wrapper->context, sendbuf, recvbuf,
+                    count, recvcount, wrapper->size, op);
                 break;
             case GLOO_FLOAT64:
-                opts.setInput(static_cast<double*>(sendbuf), count);
-                opts.setOutput(static_cast<double*>(recvbuf), recvcount);
+                do_reduce_scatter<double>(wrapper->context, sendbuf, recvbuf,
+                    count, recvcount, wrapper->size, op);
                 break;
             case GLOO_INT32:
-                opts.setInput(static_cast<int32_t*>(sendbuf), count);
-                opts.setOutput(static_cast<int32_t*>(recvbuf), recvcount);
+                do_reduce_scatter<int32_t>(wrapper->context, sendbuf, recvbuf,
+                    count, recvcount, wrapper->size, op);
                 break;
             case GLOO_INT64:
-                opts.setInput(static_cast<int64_t*>(sendbuf), count);
-                opts.setOutput(static_cast<int64_t*>(recvbuf), recvcount);
+                do_reduce_scatter<int64_t>(wrapper->context, sendbuf, recvbuf,
+                    count, recvcount, wrapper->size, op);
                 break;
             default:
                 return GLOO_INVALID_ARGUMENT;
         }
-
-        // Set per-rank counts (equal split)
-        std::vector<int> counts(wrapper->size, recvcount);
-        opts.setRecvCounts(counts);
-
-        gloo::reduce_scatter(opts);
         return GLOO_SUCCESS;
+    } catch (const std::invalid_argument&) {
+        return GLOO_INVALID_ARGUMENT;
     } catch (...) {
         return GLOO_INTERNAL_ERROR;
     }
