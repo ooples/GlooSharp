@@ -14,7 +14,7 @@ env:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
@@ -32,58 +32,56 @@ jobs:
       run: dotnet build --configuration Release --no-restore
 
     - name: Test with Coverage
-      shell: pwsh
       run: |
-        dotnet test --configuration Release --no-build --verbosity normal --framework net10.0 `
-          --collect:"XPlat Code Coverage" `
-          --results-directory ./coverage `
+        dotnet test --configuration Release --no-build --verbosity normal --framework net10.0 \
+          --collect:"XPlat Code Coverage" \
+          --results-directory ./coverage \
           -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura
 
     - name: Install ReportGenerator
-      shell: pwsh
       run: dotnet tool install --global dotnet-reportgenerator-globaltool
 
     - name: Generate Coverage Report
-      shell: pwsh
       run: |
-        reportgenerator `
-          -reports:"./coverage/**/coverage.cobertura.xml" `
-          -targetdir:"./coverage/report" `
+        reportgenerator \
+          -reports:"./coverage/**/coverage.cobertura.xml" \
+          -targetdir:"./coverage/report" \
           -reporttypes:"Html;Cobertura;TextSummary"
 
     - name: Display Coverage Summary
-      shell: pwsh
       run: |
-        $summaryFile = "./coverage/report/Summary.txt"
-        if (Test-Path $summaryFile) {
-          Write-Host "=== Code Coverage Summary ==="
-          Get-Content $summaryFile
-          Write-Host "============================="
-        }
+        SUMMARY_FILE="./coverage/report/Summary.txt"
+        if [ -f "$SUMMARY_FILE" ]; then
+          echo "=== Code Coverage Summary ==="
+          cat "$SUMMARY_FILE"
+          echo "============================="
+        fi
 
     - name: Check Coverage Threshold
-      shell: pwsh
       run: |
-        $coverageFile = Get-ChildItem -Path "./coverage" -Recurse -Filter "coverage.cobertura.xml" | Select-Object -First 1
-        if (-not $coverageFile) {
-          Write-Error "No coverage file found!"
+        COVERAGE_FILE=$(find ./coverage -name "coverage.cobertura.xml" -type f | head -1)
+        if [ -z "$COVERAGE_FILE" ]; then
+          echo "Error: No coverage file found!"
           exit 1
-        }
+        fi
 
-        [xml]$coverage = Get-Content $coverageFile.FullName
-        $lineRate = [double]$coverage.coverage.'line-rate' * 100
-        $branchRate = [double]$coverage.coverage.'branch-rate' * 100
+        LINE_RATE=$(grep -oP 'line-rate="\K[^"]+' "$COVERAGE_FILE" | head -1)
+        BRANCH_RATE=$(grep -oP 'branch-rate="\K[^"]+' "$COVERAGE_FILE" | head -1)
 
-        Write-Host "Line Coverage: $([math]::Round($lineRate, 2))%"
-        Write-Host "Branch Coverage: $([math]::Round($branchRate, 2))%"
-        Write-Host "Required Threshold: $env:COVERAGE_THRESHOLD%"
+        LINE_PCT=$(echo "$LINE_RATE * 100" | bc -l)
+        BRANCH_PCT=$(echo "$BRANCH_RATE * 100" | bc -l)
 
-        if ($lineRate -lt $env:COVERAGE_THRESHOLD) {
-          Write-Error "Line coverage ($([math]::Round($lineRate, 2))%) is below the required threshold ($env:COVERAGE_THRESHOLD%)!"
+        printf "Line Coverage: %.2f%%\n" "$LINE_PCT"
+        printf "Branch Coverage: %.2f%%\n" "$BRANCH_PCT"
+        echo "Required Threshold: ${COVERAGE_THRESHOLD}%"
+
+        BELOW=$(echo "$LINE_PCT < $COVERAGE_THRESHOLD" | bc -l)
+        if [ "$BELOW" -eq 1 ]; then
+          printf "Error: Line coverage (%.2f%%) is below the required threshold (%s%%)!\n" "$LINE_PCT" "$COVERAGE_THRESHOLD"
           exit 1
-        }
+        fi
 
-        Write-Host "Coverage check PASSED!"
+        echo "Coverage check PASSED!"
 
     - name: Upload Coverage Report
       uses: actions/upload-artifact@v4
@@ -106,7 +104,7 @@ jobs:
 
   publish:
     needs: build
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
 
     steps:

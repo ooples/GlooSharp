@@ -31,7 +31,7 @@ env:
 jobs:
   version-and-build:
     name: Version and Build
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
       package_version: ${{ steps.version.outputs.version }}
@@ -238,7 +238,7 @@ jobs:
 
   pack:
     name: Pack NuGet
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     needs: [version-and-build, build-native]
     timeout-minutes: 20
     if: needs.version-and-build.outputs.should_release == 'true'
@@ -252,7 +252,6 @@ jobs:
           path: native-artifacts/
 
       - name: Place native binaries in runtimes
-        shell: bash
         run: |
           mkdir -p src/GlooSharp/runtimes/linux-x64/native
           mkdir -p src/GlooSharp/runtimes/osx-arm64/native
@@ -298,21 +297,19 @@ jobs:
           dotnet build -c Release --no-restore
 
       - name: Pack NuGet packages
-        shell: pwsh
         run: |
-          $VERSION = "${{ needs.version-and-build.outputs.package_version }}"
-          Write-Host "Packing version $VERSION"
+          VERSION="${{ needs.version-and-build.outputs.package_version }}"
+          echo "Packing version $VERSION"
 
-          New-Item -ItemType Directory -Force -Path out | Out-Null
+          mkdir -p out
 
-          if (Test-Path "src/GlooSharp/GlooSharp.csproj") {
-            Write-Host "Packing GlooSharp..."
-            dotnet pack src/GlooSharp/GlooSharp.csproj -c Release -o out --no-build /p:PackageVersion=$VERSION
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
+          if [ -f "src/GlooSharp/GlooSharp.csproj" ]; then
+            echo "Packing GlooSharp..."
+            dotnet pack src/GlooSharp/GlooSharp.csproj -c Release -o out --no-build /p:PackageVersion="$VERSION"
+          fi
 
-          Write-Host "=== Packages created ==="
-          Get-ChildItem out/
+          echo "=== Packages created ==="
+          ls -la out/
 
       - name: Upload package artifacts
         uses: actions/upload-artifact@v4
