@@ -29,39 +29,74 @@ public static class GlooTransport
 {
     /// <summary>
     /// Creates a TCP transport and attaches it to the given context.
+    /// Uses a file-based rendezvous store so all processes can discover each other.
     /// </summary>
     /// <param name="context">The Gloo context to attach the transport to.</param>
     /// <param name="hostname">
     /// The hostname or IP address that this rank should bind to (e.g., "0.0.0.0" or "192.168.1.10").
     /// </param>
     /// <param name="port">The base port number. Each rank typically uses <c>port + rank</c>.</param>
+    /// <param name="storePath">
+    /// Path to a shared directory for rendezvous. All processes must be able to read/write
+    /// this directory. If <c>null</c>, defaults to a temporary directory.
+    /// </param>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="context"/> or <paramref name="hostname"/> is null.</exception>
     /// <exception cref="GlooException">Thrown if the native transport creation fails.</exception>
-    public static void CreateTCP(GlooContext context, string hostname, int port)
+    public static void CreateTCP(GlooContext context, string hostname, int port,
+                                  string? storePath = null)
     {
         if (context == null) throw new ArgumentNullException(nameof(context));
         if (hostname == null) throw new ArgumentNullException(nameof(hostname));
 
-        int result = GlooNativeLibrary.gloo_transport_tcp_create(context.Handle, hostname, port);
+        string effectiveStorePath = storePath ?? GetDefaultStorePath();
+
+        int result = GlooNativeLibrary.gloo_transport_tcp_create(
+            context.Handle, hostname, port, effectiveStorePath);
         GlooException.ThrowIfFailed(result);
     }
 
     /// <summary>
     /// Creates an InfiniBand transport and attaches it to the given context.
+    /// Uses a file-based rendezvous store so all processes can discover each other.
     /// </summary>
     /// <param name="context">The Gloo context to attach the transport to.</param>
     /// <param name="device">
     /// The InfiniBand device name (e.g., "mlx5_0"). Pass an empty string to auto-detect.
     /// </param>
+    /// <param name="storePath">
+    /// Path to a shared directory for rendezvous. All processes must be able to read/write
+    /// this directory. If <c>null</c>, defaults to a temporary directory.
+    /// </param>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="context"/> or <paramref name="device"/> is null.</exception>
     /// <exception cref="GlooException">Thrown if the native transport creation fails.</exception>
-    public static void CreateInfiniBand(GlooContext context, string device)
+    public static void CreateInfiniBand(GlooContext context, string device,
+                                         string? storePath = null)
     {
         if (context == null) throw new ArgumentNullException(nameof(context));
         if (device == null) throw new ArgumentNullException(nameof(device));
 
-        int result = GlooNativeLibrary.gloo_transport_ib_create(context.Handle, device);
+        string effectiveStorePath = storePath ?? GetDefaultStorePath();
+
+        int result = GlooNativeLibrary.gloo_transport_ib_create(
+            context.Handle, device, effectiveStorePath);
         GlooException.ThrowIfFailed(result);
+    }
+
+    /// <summary>
+    /// Gets the default store path for rendezvous. Uses the GLOO_STORE_PATH environment
+    /// variable if set, otherwise creates a temporary directory.
+    /// </summary>
+    private static string GetDefaultStorePath()
+    {
+        string? envPath = Environment.GetEnvironmentVariable("GLOO_STORE_PATH");
+        if (!string.IsNullOrEmpty(envPath))
+        {
+            return envPath;
+        }
+
+        string tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "gloo_rendezvous");
+        System.IO.Directory.CreateDirectory(tempPath);
+        return tempPath;
     }
 
     /// <summary>

@@ -16,6 +16,8 @@
 #include "gloo_native.h"
 
 #include <gloo/context.h>
+#include <gloo/rendezvous/context.h>
+#include <gloo/rendezvous/file_store.h>
 #include <gloo/transport/tcp/device.h>
 #include <gloo/allreduce.h>
 #include <gloo/broadcast.h>
@@ -30,6 +32,7 @@
 #include <memory>
 #include <stdexcept>
 #include <cstring>
+#include <string>
 #include <vector>
 
 /* ─── Internal wrapper struct ───────────────────────────────────── */
@@ -154,8 +157,9 @@ int gloo_context_destroy(void* ctx) {
 
 /* ─── Transport ─────────────────────────────────────────────────── */
 
-int gloo_transport_tcp_create(void* ctx, const char* hostname, int port) {
-    if (!ctx || !hostname) return GLOO_INVALID_ARGUMENT;
+int gloo_transport_tcp_create(void* ctx, const char* hostname,
+                              int port, const char* store_path) {
+    if (!ctx || !hostname || !store_path) return GLOO_INVALID_ARGUMENT;
 
     try {
         auto* wrapper = static_cast<GlooContextWrapper*>(ctx);
@@ -166,10 +170,14 @@ int gloo_transport_tcp_create(void* ctx, const char* hostname, int port) {
         auto device = gloo::transport::tcp::CreateDevice(attr);
         wrapper->device = device;
 
+        // Create rendezvous FileStore — all processes must share this directory
+        auto store = std::make_shared<gloo::rendezvous::FileStore>(
+            std::string(store_path));
+
+        // Create rendezvous context and connect all processes
         auto context = std::make_shared<gloo::rendezvous::Context>(
             wrapper->rank, wrapper->size);
-        // Note: In production, a rendezvous Store (file, Redis, etc.) is needed.
-        // The store-based connectFullMesh is called here.
+        context->connectFullMesh(store, device);
         wrapper->context = context;
 
         return GLOO_SUCCESS;
@@ -180,9 +188,10 @@ int gloo_transport_tcp_create(void* ctx, const char* hostname, int port) {
     }
 }
 
-int gloo_transport_ib_create(void* ctx, const char* device_name) {
+int gloo_transport_ib_create(void* ctx, const char* device_name,
+                             const char* store_path) {
 #ifdef GLOO_USE_IBVERBS
-    if (!ctx || !device_name) return GLOO_INVALID_ARGUMENT;
+    if (!ctx || !device_name || !store_path) return GLOO_INVALID_ARGUMENT;
 
     try {
         auto* wrapper = static_cast<GlooContextWrapper*>(ctx);
@@ -195,8 +204,14 @@ int gloo_transport_ib_create(void* ctx, const char* device_name) {
         auto device = gloo::transport::ibverbs::CreateDevice(attr);
         wrapper->device = device;
 
+        // Create rendezvous FileStore — all processes must share this directory
+        auto store = std::make_shared<gloo::rendezvous::FileStore>(
+            std::string(store_path));
+
+        // Create rendezvous context and connect all processes
         auto context = std::make_shared<gloo::rendezvous::Context>(
             wrapper->rank, wrapper->size);
+        context->connectFullMesh(store, device);
         wrapper->context = context;
 
         return GLOO_SUCCESS;
@@ -206,6 +221,7 @@ int gloo_transport_ib_create(void* ctx, const char* device_name) {
 #else
     (void)ctx;
     (void)device_name;
+    (void)store_path;
     return GLOO_TRANSPORT_ERROR;
 #endif
 }

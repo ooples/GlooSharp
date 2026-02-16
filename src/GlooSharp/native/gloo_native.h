@@ -80,22 +80,31 @@ GLOO_NATIVE_EXPORT int gloo_context_destroy(void* ctx);
 
 /**
  * Creates a TCP transport and attaches it to the context.
+ * Uses a FileStore at store_path for rendezvous, then calls connectFullMesh
+ * to establish all-to-all connections between processes.
  *
- * @param ctx       The Gloo context.
- * @param hostname  Hostname or IP to bind to.
- * @param port      Base port number.
- * @return          GLOO_SUCCESS or an error code.
+ * @param ctx        The Gloo context.
+ * @param hostname   Hostname or IP to bind to.
+ * @param port       Base port number.
+ * @param store_path Path to a shared directory for rendezvous (FileStore).
+ *                   All processes must be able to read/write this path.
+ * @return           GLOO_SUCCESS or an error code.
  */
-GLOO_NATIVE_EXPORT int gloo_transport_tcp_create(void* ctx, const char* hostname, int port);
+GLOO_NATIVE_EXPORT int gloo_transport_tcp_create(void* ctx, const char* hostname,
+                                                  int port, const char* store_path);
 
 /**
  * Creates an InfiniBand transport and attaches it to the context.
+ * Uses a FileStore at store_path for rendezvous, then calls connectFullMesh
+ * to establish all-to-all connections between processes.
  *
- * @param ctx       The Gloo context.
- * @param device    IB device name (e.g., "mlx5_0"). Empty string for auto-detect.
- * @return          GLOO_SUCCESS or an error code.
+ * @param ctx        The Gloo context.
+ * @param device     IB device name (e.g., "mlx5_0"). Empty string for auto-detect.
+ * @param store_path Path to a shared directory for rendezvous (FileStore).
+ * @return           GLOO_SUCCESS or an error code.
  */
-GLOO_NATIVE_EXPORT int gloo_transport_ib_create(void* ctx, const char* device);
+GLOO_NATIVE_EXPORT int gloo_transport_ib_create(void* ctx, const char* device,
+                                                 const char* store_path);
 
 /**
  * Checks whether InfiniBand hardware is available.

@@ -42,20 +42,26 @@ internal static class GlooNativeLibrary
 
     /// <summary>
     /// Creates a TCP transport and attaches it to the context.
+    /// Uses a FileStore at <paramref name="storePath"/> for rendezvous, then
+    /// calls connectFullMesh to establish all-to-all connections.
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
     internal static extern int gloo_transport_tcp_create(
         IntPtr ctx,
         [MarshalAs(UnmanagedType.LPStr)] string hostname,
-        int port);
+        int port,
+        [MarshalAs(UnmanagedType.LPStr)] string storePath);
 
     /// <summary>
     /// Creates an InfiniBand transport and attaches it to the context.
+    /// Uses a FileStore at <paramref name="storePath"/> for rendezvous, then
+    /// calls connectFullMesh to establish all-to-all connections.
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
     internal static extern int gloo_transport_ib_create(
         IntPtr ctx,
-        [MarshalAs(UnmanagedType.LPStr)] string device);
+        [MarshalAs(UnmanagedType.LPStr)] string device,
+        [MarshalAs(UnmanagedType.LPStr)] string storePath);
 
     /// <summary>
     /// Checks whether InfiniBand devices are available on the system.
