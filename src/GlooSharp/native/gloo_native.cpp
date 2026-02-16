@@ -85,28 +85,28 @@ static ReduceFunc get_reduce_function(int op) {
                 auto* tc = static_cast<T*>(c);
                 auto* ta = static_cast<const T*>(a);
                 auto* tb = static_cast<const T*>(b);
-                for (size_t i = 0; i < n / sizeof(T); ++i) tc[i] = ta[i] + tb[i];
+                for (size_t i = 0; i < n; ++i) tc[i] = ta[i] + tb[i];
             };
         case GLOO_OP_PRODUCT:
             return [](void* c, const void* a, const void* b, size_t n) {
                 auto* tc = static_cast<T*>(c);
                 auto* ta = static_cast<const T*>(a);
                 auto* tb = static_cast<const T*>(b);
-                for (size_t i = 0; i < n / sizeof(T); ++i) tc[i] = ta[i] * tb[i];
+                for (size_t i = 0; i < n; ++i) tc[i] = ta[i] * tb[i];
             };
         case GLOO_OP_MIN:
             return [](void* c, const void* a, const void* b, size_t n) {
                 auto* tc = static_cast<T*>(c);
                 auto* ta = static_cast<const T*>(a);
                 auto* tb = static_cast<const T*>(b);
-                for (size_t i = 0; i < n / sizeof(T); ++i) tc[i] = (ta[i] < tb[i]) ? ta[i] : tb[i];
+                for (size_t i = 0; i < n; ++i) tc[i] = (ta[i] < tb[i]) ? ta[i] : tb[i];
             };
         case GLOO_OP_MAX:
             return [](void* c, const void* a, const void* b, size_t n) {
                 auto* tc = static_cast<T*>(c);
                 auto* ta = static_cast<const T*>(a);
                 auto* tb = static_cast<const T*>(b);
-                for (size_t i = 0; i < n / sizeof(T); ++i) tc[i] = (ta[i] > tb[i]) ? ta[i] : tb[i];
+                for (size_t i = 0; i < n; ++i) tc[i] = (ta[i] > tb[i]) ? ta[i] : tb[i];
             };
         default:
             throw std::invalid_argument("Unknown reduction operation");
